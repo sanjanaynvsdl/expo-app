@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { io, Socket } from 'socket.io-client';
-
+import { fetchRoute, formatDistance, formatDuration, RouteResponse } from '../utils/mapboxUtils';
+import { LatLng, RouteInfo } from '../types/map';
 
 const LOCATION_TASK_NAME = 'background-location-task';
-
+const DESTINATION: LatLng = { latitude: 16.2253, longitude: 77.8097 }; // Hardcoded destination
 
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: TaskManager.TaskManagerTaskBody<any>) => {
   if (error) {
@@ -26,16 +27,15 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: TaskManager.T
   }
 });
 
-// Function to send location to WebSocket server with proper typing
+// Function to send location to WebSocket server
 const sendLocationToServer = async (location: Location.LocationObject): Promise<void> => {
   try {
-    // Using Socket.IO client instead of WebSocket
     console.log('Sending location to server:', JSON.stringify(location.coords));
     
-    // Create a temporary socket connection
+    //temporary socket connection
     const socket = io('http://192.168.1.7:3000');
     
-    // Wait for connection and emit location data
+    
     socket.on('connect', () => {
       socket.emit('location', {
         latitude: location.coords.latitude,
@@ -59,7 +59,41 @@ const sendLocationToServer = async (location: Location.LocationObject): Promise<
 export default function LocationScreen() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [route, setRoute] = useState<RouteResponse | null>(null);
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const socketRef = useRef<Socket | null>(null);
+  const mapRef = useRef<MapView>(null);
+
+  // Function to fetch and update route
+  const updateRoute = async (currentLocation: Location.LocationObject) => {
+    try {
+      const origin: LatLng = {
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude
+      };
+      
+      const routeData = await fetchRoute(origin, DESTINATION);
+      setRoute(routeData);
+      setRouteInfo({
+        distance: formatDistance(routeData.distance),
+        duration: formatDuration(routeData.duration)
+      });
+    } catch (error) {
+      console.error('Error updating route:', error);
+    }
+  };
+
+  // Function to fit map to show entire route
+  const fitMapToRoute = () => {
+    if (mapRef.current && route?.coordinates) {
+      const coordinates = route.coordinates;
+      mapRef.current.fitToCoordinates(coordinates, {
+        edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+        animated: true
+      });
+    }
+  };
 
   useEffect(() => {
     let locationSubscription: Location.LocationSubscription | null = null;
@@ -91,17 +125,22 @@ export default function LocationScreen() {
       // Send initial location to server
       await sendLocationToServer(loc);
       
+      // Get initial route
+      await updateRoute(loc);
+      setIsLoading(false);
+      
       // Start foreground location updates
       locationSubscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Highest,
-          timeInterval: 10000, // 10 seconds between updates
+          timeInterval: 10000,
           distanceInterval: 5,
         },
-        (newLocation) => {
+        async (newLocation) => {
           setLocation(newLocation);
           console.log('Foreground location update:', newLocation.coords);
-          sendLocationToServer(newLocation);
+          await sendLocationToServer(newLocation);
+          await updateRoute(newLocation);
         }
       );
       
@@ -146,22 +185,117 @@ export default function LocationScreen() {
     };
   }, []);
 
-  if (!location) return <ActivityIndicator size="large" color="#000" />;
+  // Fit map to route when route is updated
+  useEffect(() => {
+    if (route) {
+      fitMapToRoute();
+    }
+  }, [route]);
+
+  if (!location || isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#631235" />
+      </View>
+    );
+  }
 
   return (
-    <MapView
-      style={{ flex: 1 }}
-      initialRegion={{
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
-      }}
-    >
-      <Marker coordinate={{
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude
-      }} />
-    </MapView>
+    <View style={styles.container}>
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        provider={PROVIDER_GOOGLE}
+        initialRegion={{
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }}
+      >
+        {/* Current location marker */}
+        <Marker
+          coordinate={{
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude
+          }}
+          pinColor="#447bd5"
+        />
+        
+        {/* Destination marker */}
+        <Marker
+          coordinate={DESTINATION}
+          pinColor="#b42121"
+        />
+        
+        {/* Route polyline */}
+        {route && (
+          <Polyline
+            coordinates={route.coordinates}
+            strokeColor="#631235"
+            strokeWidth={4}
+          />
+        )}
+      </MapView>
+      
+      {/* Route info overlay */}
+      {routeInfo && (
+        <View style={styles.routeInfoContainer}>
+          <View style={styles.routeInfoRow}>
+            <Text style={styles.routeInfoLabel}>Distance:</Text>
+            <Text style={styles.routeInfoValue}>{routeInfo.distance}</Text>
+          </View>
+          <View style={styles.routeInfoRow}>
+            <Text style={styles.routeInfoLabel}>Duration:</Text>
+            <Text style={styles.routeInfoValue}>{routeInfo.duration}</Text>
+          </View>
+        </View>
+      )}
+    </View>
   );
 }
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  map: {
+    flex: 1,
+  },
+  routeInfoContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'white',
+    padding: 15,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  routeInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  routeInfoLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#631235',
+  },
+  routeInfoValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#631235',
+  },
+});
