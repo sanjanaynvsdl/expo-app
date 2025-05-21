@@ -5,10 +5,10 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { io, Socket } from 'socket.io-client';
 
-// Define background task name constant
+
 const LOCATION_TASK_NAME = 'background-location-task';
 
-// Define the background task - fixed to return Promise
+
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: TaskManager.TaskManagerTaskBody<any>) => {
   if (error) {
     console.error('Error in background location task:', error);
@@ -16,7 +16,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: TaskManager.T
   }
   
   if (data) {
-    // Properly type the locations data
+    
     const { locations } = data as { locations: Location.LocationObject[] };
     const location = locations[0];
     console.log('Background location:', location.coords);
@@ -33,7 +33,7 @@ const sendLocationToServer = async (location: Location.LocationObject): Promise<
     console.log('Sending location to server:', JSON.stringify(location.coords));
     
     // Create a temporary socket connection
-    const socket = io('http://192.168.1.4:3000');
+    const socket = io('http://192.168.1.7:3000');
     
     // Wait for connection and emit location data
     socket.on('connect', () => {
